@@ -36,38 +36,66 @@ export default function Page() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // ---------------- Load Saved Tasks + Theme ----------------
+  // ---------------- Load Tasks from API + Theme ----------------
   useEffect(() => {
-    try {
-      setLoading(true);
-      const savedTasks = localStorage.getItem("tasks");
-      const savedTheme = localStorage.getItem("theme");
+    const loadTasks = async () => {
+      try {
+        setLoading(true);
+        const savedTheme = localStorage.getItem("theme");
+        
+        // Load theme from localStorage
+        if (savedTheme === "dark") setDarkMode(true);
 
-      if (savedTasks) {
-        const parsed = JSON.parse(savedTasks).map((t: any) => ({
-          ...t,
-          deadline: new Date(t.deadline),
-        }));
-        setTasks(parsed);
-      }
-      if (savedTheme === "dark") setDarkMode(true);
+        // Fetch tasks from API
+        const response = await fetch("/api/tasks");
+        if (!response.ok) {
+          throw new Error("Failed to fetch tasks");
+        }
+        
+        const tasksData = await response.json();
+        const parsedTasks = tasksData.map((t: any) => {
+          // Handle different date formats from API
+          let deadline: Date;
+          if (t.deadline) {
+            // New format with deadline field
+            deadline = new Date(t.deadline);
+          } else if (t.date && t.time) {
+            // Legacy format with separate date and time fields
+            deadline = new Date(`${t.date}T${t.time}:00`);
+          } else {
+            // Fallback to current time
+            deadline = new Date();
+          }
+          
+          return {
+            ...t,
+            deadline,
+            // Ensure we have the expected fields
+            note: t.note || "",
+            notified: t.notified || false,
+          };
+        });
+        setTasks(parsedTasks);
 
-      if ("Notification" in window) Notification.requestPermission();
-      if ("serviceWorker" in navigator) {
-        navigator.serviceWorker
-          .register("/sw.js")
-          .then(() => console.log("✅ SW registered"))
-          .catch(() => console.log("❌ SW failed"));
+        if ("Notification" in window) Notification.requestPermission();
+        if ("serviceWorker" in navigator) {
+          navigator.serviceWorker
+            .register("/sw.js")
+            .then(() => console.log("✅ SW registered"))
+            .catch(() => console.log("❌ SW failed"));
+        }
+      } catch (error) {
+        console.error("Error loading tasks:", error);
+        setError("Failed to load tasks. Please try again.");
+      } finally {
+        setTimeout(() => setLoading(false), 1000);
       }
-    } catch {
-      setError("Failed to load tasks. Please try again.");
-    } finally {
-      setTimeout(() => setLoading(false), 1000);
-    }
+    };
+
+    loadTasks();
   }, []);
 
-  // ---------------- Save Tasks + Theme ----------------
-  useEffect(() => localStorage.setItem("tasks", JSON.stringify(tasks)), [tasks]);
+  // ---------------- Save Theme ----------------
   useEffect(() => localStorage.setItem("theme", darkMode ? "dark" : "light"), [darkMode]);
 
   // ---------------- Notifications ----------------
@@ -92,26 +120,93 @@ export default function Page() {
   }, []);
 
   // ---------------- CRUD ----------------
-  const handleAddTask = () => {
+  const handleAddTask = async () => {
     if (!taskName || !deadline) return alert("Please enter a task name and deadline.");
-    if (editingTask) {
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.id === editingTask.id
-            ? { ...t, name: taskName, deadline, note, notified: false }
-            : t
-        )
-      );
-      setEditingTask(null);
-    } else {
-      setTasks((prev) => [
-        ...prev,
-        { id: Date.now(), name: taskName, deadline, note, notified: false },
-      ]);
+    
+    try {
+      if (editingTask) {
+        // Update existing task
+        const taskData = {
+          name: taskName,
+          date: deadline.toISOString().split('T')[0], // YYYY-MM-DD format
+          time: deadline.toTimeString().substring(0, 5), // HH:MM format
+          note,
+          type: "reminder",
+          notified: false,
+        };
+
+        const response = await fetch(`/api/tasks/${editingTask.id}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(taskData),
+        });
+
+        if (!response.ok) {
+          throw new Error("Failed to update task");
+        }
+
+        const updatedTask = await response.json();
+        // Convert the API response back to frontend format
+        const taskForFrontend = {
+          ...updatedTask,
+          deadline: new Date(`${updatedTask.date}T${updatedTask.time}:00`),
+          note: updatedTask.note || "",
+          notified: updatedTask.notified || false,
+        };
+        
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === editingTask.id ? taskForFrontend : t
+          )
+        );
+        setEditingTask(null);
+      } else {
+        // Add new task
+        const taskData = {
+          name: taskName,
+          date: deadline.toISOString().split('T')[0], // YYYY-MM-DD format
+          time: deadline.toTimeString().substring(0, 5), // HH:MM format
+          note,
+          type: "reminder",
+        };
+
+        const response = await fetch("/api/tasks", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(taskData),
+        });
+
+        if (!response.ok) {
+          throw new Error("Failed to add task");
+        }
+
+        const newTask = await response.json();
+        // Convert the API response back to frontend format
+        const taskForFrontend = {
+          ...newTask,
+          deadline: new Date(`${newTask.date}T${newTask.time}:00`),
+          note: newTask.note || "",
+          notified: false,
+        };
+        
+        setTasks((prev) => [
+          ...prev,
+          taskForFrontend,
+        ]);
+      }
+
+      // Clear form
+      setTaskName("");
+      setDeadline(null);
+      setNote("");
+    } catch (error) {
+      console.error("Error saving task:", error);
+      alert("Failed to save task. Please try again.");
     }
-    setTaskName("");
-    setDeadline(null);
-    setNote("");
   };
 
   const handleEdit = (task: Task) => {
@@ -121,9 +216,22 @@ export default function Page() {
     setNote(task.note || "");
   };
 
-  const handleDelete = (id: number) => {
+  const handleDelete = async (id: number) => {
     if (confirm("Delete this task?")) {
-      setTasks(tasks.filter((t) => t.id !== id));
+      try {
+        const response = await fetch(`/api/tasks/${id}`, {
+          method: "DELETE",
+        });
+
+        if (!response.ok) {
+          throw new Error("Failed to delete task");
+        }
+
+        setTasks(tasks.filter((t) => t.id !== id));
+      } catch (error) {
+        console.error("Error deleting task:", error);
+        alert("Failed to delete task. Please try again.");
+      }
     }
   };
 

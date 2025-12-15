@@ -72,24 +72,40 @@ export async function POST(request) {
         { status: 400 }
       );
     }
+    if (!newTask.date) {
+      return NextResponse.json(
+        { error: "Task date is required" },
+        { status: 400 }
+      );
+    }
+    if (!newTask.time) {
+      return NextResponse.json(
+        { error: "Task time is required" },
+        { status: 400 }
+      );
+    }
     
     // Read existing tasks
     const tasks = readTasks();
     
-    // Add ID and timestamp if not present
-    if (!newTask.id) {
-      newTask.id = Date.now().toString();
-    }
-    if (!newTask.created) {
-      newTask.created = new Date().toISOString();
-    }
+    // Create task with proper structure for existing API format
+    const task = {
+      id: newTask.id || Date.now().toString(),
+      name: newTask.name,
+      date: newTask.date,
+      time: newTask.time,
+      note: newTask.note || "",
+      type: newTask.type || "reminder",
+      notified: newTask.notified || false,
+      created: new Date().toISOString()
+    };
     
     // Add task
-    tasks.push(newTask);
+    tasks.push(task);
     writeTasks(tasks);
     
-    console.log(`✅ Added task: ${newTask.name}`);
-    return NextResponse.json(newTask, { status: 201 });
+    console.log(`✅ Added task: ${task.name}`);
+    return NextResponse.json(task, { status: 201 });
   } catch (error) {
     console.error("Error adding task:", error);
     return NextResponse.json(
